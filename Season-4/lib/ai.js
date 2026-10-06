@@ -2,7 +2,9 @@
 /**
  * ai.js — AI interaction layer for ProdBot.
  *
- * This module handles communication with GitHub Models (an OpenAI-compatible API).
+ * This module handles communication with an OpenAI-compatible chat completions API.
+ * By default that is a model running locally in your Codespace via Ollama, but any
+ * compatible endpoint works — see Season-4/README.md.
  * It sends the user's natural language input to an LLM along with a system prompt
  * that instructs the model to respond with structured JSON containing bash commands.
  *
@@ -16,15 +18,17 @@
  * Key concepts demonstrated:
  *   - System prompts: constraining LLM output format via instructions
  *   - Structured output: getting reliable JSON from an LLM (with fallback)
- *   - API authentication: using GITHUB_TOKEN to access GitHub Models
+ *   - API authentication: supplying an API key from the environment, never from source
  */
 
 import OpenAI from "openai";
 import chalk from "chalk";
 
-// GitHub Models uses GITHUB_TOKEN for authentication.
-// In Codespaces this is available automatically; locally you must set it.
-const ghToken = process.env["GITHUB_TOKEN"];
+// Set by .devcontainer/devcontainer.json. A local Ollama server ignores the key, but
+// the OpenAI client still requires the field to be present.
+const baseURL = process.env["SCG_AI_BASE_URL"];
+const apiKey = process.env["SCG_AI_API_KEY"];
+const model = process.env["SCG_AI_MODEL"] || "qwen2.5:7b";
 
 /**
  * System prompt — this is the instruction set sent to the LLM before every request.
@@ -56,28 +60,28 @@ Rules:
 /**
  * Sends a user message to the LLM and returns a parsed action object.
  *
- * The OpenAI client is configured to use GitHub Models' inference endpoint
- * (models.github.ai) rather than OpenAI directly. The model used is
- * gpt-4.1-nano — a small, fast model suitable for structured command generation.
+ * The OpenAI client is pointed at whatever endpoint SCG_AI_BASE_URL names, running
+ * whatever model SCG_AI_MODEL names — by default a small, fast model suitable for
+ * structured command generation.
  *
  * @param {string} userMessage - The user's natural language input
  * @param {string} [customSystemPrompt] - Optional custom system prompt (for agent-specific personas)
  * @returns {Promise<{ action: string, [key: string]: any }>} Parsed AI response
  */
 export async function sendToAI(userMessage, customSystemPrompt) {
-    if (!ghToken) {
-        console.error(chalk.redBright("❌ GITHUB_TOKEN not found. Please set it in your environment."));
-        return { action: "message", text: "Error: GITHUB_TOKEN not configured." };
+    if (!baseURL || !apiKey) {
+        console.error(chalk.redBright(
+            "❌ AI provider not configured. Set SCG_AI_BASE_URL and SCG_AI_API_KEY " +
+            "(and optionally SCG_AI_MODEL) in your environment. See Season-4/README.md."
+        ));
+        return { action: "message", text: "Error: AI provider not configured." };
     }
 
-    const openai = new OpenAI({
-        baseURL: "https://models.github.ai/inference",
-        apiKey: ghToken,
-    });
+    const openai = new OpenAI({ baseURL, apiKey });
 
     try {
         const completion = await openai.chat.completions.create({
-            model: "openai/gpt-4.1-nano",
+            model,
             messages: [
                 { role: "system", content: customSystemPrompt || SYSTEM_PROMPT },
                 { role: "user", content: userMessage },
@@ -94,8 +98,23 @@ export async function sendToAI(userMessage, customSystemPrompt) {
             return { action: "message", text: raw };
         }
     } catch (err) {
-        const msg = err.message || String(err);
-        console.error(chalk.redBright(`❌ AI Error: ${msg}`));
+        console.error(chalk.redBright(`❌ AI Error: ${describeAiError(err)}`));
         return { action: "message", text: "Sorry, I couldn't process that request." };
     }
+}
+
+// Turns a provider failure into something a player can act on. Never prints the key.
+function describeAiError(err) {
+    const status = err?.status;
+    const code = err?.code ?? err?.error?.code ?? "";
+    // Hosted models may refuse prompt-injection outright: Azure OpenAI reports
+    // content_filter, serverless models report content_safety_violation.
+    if (code === "content_filter" || code === "content_safety_violation" || /Jailbreak/i.test(err?.message ?? "")) {
+        return "the provider's safety filter blocked this prompt. Some hosted models refuse prompt-injection attempts outright; try a different phrasing, or a different model.";
+    }
+    if (status === 401 || status === 403) return "the API key was rejected. Check SCG_AI_API_KEY.";
+    if (status === 404) return `no model named "${model}" at ${baseURL}. Check SCG_AI_MODEL matches a model you have pulled — run: ollama list`;
+    if (status === 429) return "the AI provider is rate limiting us. Wait a moment, then try again.";
+    if (!status) return `could not reach the AI provider at ${baseURL}. Is it running? Try: ollama serve`;
+    return `${status} ${err?.message ?? err}`;
 }
