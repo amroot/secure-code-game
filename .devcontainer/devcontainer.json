@@ -25,7 +25,8 @@
   "containerEnv": {
     "SCG_AI_BASE_URL": "http://127.0.0.1:11434/v1",
     "SCG_AI_API_KEY": "ollama",
-    "SCG_AI_MODEL": "qwen2.5:7b",
+    "SCG_AI_MODEL": "qwen2.5:3b",
+    "OLLAMA_KEEP_ALIVE": "-1",
     "SEASON_3_LEVEL_1_SECRET": "PLAY2WIN",
     "SEASON_3_LEVEL_2_SECRET": "R3FUND11",
     "SEASON_3_LEVEL_3_SECRET": "OMG123GO",
